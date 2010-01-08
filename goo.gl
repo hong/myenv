@@ -1,0 +1,88 @@
+#!/usr/bin/python
+""" Google URL Shortener
+ Usage: python goo.gl URL"""
+
+# import struct
+import urllib
+import simplejson
+
+def usage():
+	print __doc__
+
+def _c(vals):
+    l = 0
+    for val in vals:
+        l += val & 4294967295
+    return l
+
+def _d(l):
+    if l <=  0:
+        l += 4294967296
+    m = str(l) 
+    o = 0
+    n = False
+    for char in m[::-1]:
+        q = int(char)
+        if n:
+            q *= 2
+            o += q / 10 + q % 10 # Math.floor(q / 10) + q % 10
+        else:
+            o += q
+        n = not(n)
+    m = o % 10
+    o = 0
+    if m != 0:
+        o = 10 - m
+        if len(str(l)) % 2 == 1:
+            if o % 2 == 1:
+                o += 9
+            o /= 2
+    return str(o) + str(l)
+
+def _e(uri):
+    m = 5381
+    for char in uri:
+        # m = _c([m << 5, m, struct.unpack("B", char)[0]])
+        m = _c([m << 5, m, ord(char)])
+    return m
+
+def _f(uri):
+    m = 0
+    for char in uri:
+        # m = _c([struct.unpack("B", char)[0], m << 6, m << 16, -1 * m])
+        m = _c([ord(char), m << 6, m << 16, -1 * m])
+    return m
+
+def _make_auth_token(uri):
+    i = _e(uri)
+    i = i >> 2 & 1073741823
+    i = i >> 4 & 67108800 | i & 63
+    i = i >> 4 & 4193280 | i & 1023
+    i = i >> 4 & 245760 | i & 16383
+    h = _f(uri)
+    k = (i >> 2 & 15) << 4 | h & 15
+    k |= (i >> 6 & 15) << 12 | (h >> 8 & 15) << 8
+    k |= (i >> 10 & 15) << 20 | (h >> 16 & 15) << 16
+    k |= (i >> 14 & 15) << 28 | (h >> 24 & 15) << 24
+    j = "7" + _d(k)
+    return j
+
+def get_short_url(uri, user):
+    if user is None:
+        user = 'toolbar@google.com'
+    token = _make_auth_token(uri)
+    opt = 'user='+user+'&'+urllib.urlencode({'url':uri})+'&auth_token='+token
+    # print opt
+    ggl_url = 'http://goo.gl/api/url'
+    res = urllib.urlopen(ggl_url, opt)
+    # print res.read()
+    short_url =  simplejson.loads(res.read())['short_url']
+    return short_url
+
+import sys, os
+if __name__ == "__main__":
+    #print get_short_url("http://www.aida.t.u-tokyo.ac.jp/", None)
+	if len(sys.argv) == 2:
+		print get_short_url(sys.argv[1], None)
+	else:
+		usage()
