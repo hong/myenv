@@ -54,13 +54,9 @@ networkNode *m_pNetworkNode = NULL;
 unsigned int m_nDevicesFound = 0;
 unsigned int m_nNetworksFound = 0;
 
-unsigned int m_ulTxFrames_prev = 0;
-unsigned int m_ulRxFrames_prev = 0;
-unsigned int m_ulRxErrors_prev = 0;
-
-unsigned int m_ulTxFrames = 0;
-unsigned int m_ulRxFrames = 0;
-unsigned int m_ulRxErrors = 0;
+unsigned long long m_ulTxFrames = 0;
+unsigned long long m_ulRxFrames = 0;
+unsigned long m_ulRxErrors = 0;
 
 char m_localMAC[18];
 char m_localIP[16];
@@ -68,10 +64,127 @@ char m_localDEV[10];
 
 const char *msg_eol = "\n";
 const char *applet_name = "netwiz-discovery";
-/*************************************************/
 
 /*************************************************/
 #define TIMEVAL_SUBTRACT(a,b) (((a).tv_sec - (b).tv_sec) * 1000000 + (a).tv_usec - (b).tv_usec)
+
+static int statV300PortIface(const char* ifname,
+                            unsigned long long* p_rx_bytes, unsigned long long* p_rx_packets,
+                            unsigned long long* p_tx_bytes, unsigned long long* p_tx_packets,
+                            unsigned long* p_rx_errors, unsigned long* p_rx_dropped,
+                            unsigned long* p_tx_errors, unsigned long* p_tx_dropped)
+{                   
+    int ret_val = 0;
+    int   flag_stat = 0;
+    FILE* pfDevStat = NULL;
+    char* ptrTemp = NULL;
+    char  devName[64] = "";
+    char  bufTemp[1024] = "";
+    unsigned long long rx_bytes, rx_packets;
+    unsigned long long tx_bytes, tx_packets;
+    unsigned long rx_errors, rx_dropped, rx_fifo_errors, rx_length_errors;
+    unsigned long rx_compressed, rx_multicast;
+    unsigned long tx_errors, tx_dropped, tx_fifo_errors, tx_collisions, tx_carrier_errors;
+    unsigned long tx_compressed;
+
+    /* init returning values */
+    if (p_rx_bytes != NULL)
+        *p_rx_bytes = 0;
+    if (p_rx_packets != NULL)
+        *p_rx_packets = 0;
+    if (p_tx_bytes != NULL)
+        *p_tx_bytes = 0;
+    if (p_tx_packets != NULL)
+        *p_tx_packets = 0;
+    if (p_rx_errors != NULL)
+        *p_rx_errors = 0;
+    if (p_rx_dropped != NULL)
+        *p_rx_dropped = 0;
+    if (p_tx_errors != NULL)
+        *p_tx_errors = 0;
+    if (p_tx_dropped != NULL)
+        *p_tx_dropped = 0;
+
+    /* check parameters */
+    if ((ifname == NULL) || (ifname[0] == '\0'))
+       goto lzExit; 
+    /* compose devName */
+    strcpy(devName, ifname);
+    if ((ptrTemp = strchr(devName, ':')) != NULL)
+        *ptrTemp = '\0';
+
+    /* open netstat file */
+    sprintf(bufTemp, "/proc/net/dev");
+    pfDevStat = fopen(bufTemp, "rb");
+    if (pfDevStat == NULL)
+       goto lzExit; 
+
+    /* try to read interface statistical information from file */
+    while (fgets(bufTemp, sizeof(bufTemp)-1, pfDevStat) != NULL)
+    {
+        char* ptrStat = NULL;
+        char  szTmpName[64] = "";
+
+        /* split temporary device name and status buffer */
+        bufTemp[sizeof(bufTemp)-1] = '\0';
+        ptrTemp = strchr(bufTemp, ':');
+        if ((ptrTemp == NULL) || (ptrTemp - bufTemp) >= sizeof(szTmpName))
+            continue;
+        *ptrTemp = '\0';
+        ptrStat = &ptrTemp[1];
+        /* read temporary device name */
+        ptrTemp = bufTemp;
+        while (isblank(ptrTemp[0]))
+            ptrTemp++;
+        strcpy(szTmpName, ptrTemp);
+        /* skip device name that do not match */
+        if (strcmp(devName, szTmpName) != 0)
+            continue;
+
+        /* scan stat line */
+        if (sscanf(ptrStat, "%llu %llu "
+                             "%lu %lu %lu %lu "
+                             "%lu %lu "
+                             "%llu %llu "
+                             "%lu %lu %lu %lu %lu "
+                             "%lu",
+                            &rx_bytes, &rx_packets,
+                            &rx_errors, &rx_dropped, &rx_fifo_errors, &rx_length_errors,
+                            &rx_compressed, &rx_multicast,
+                            &tx_bytes, &tx_packets,
+                            &tx_errors, &tx_dropped, &tx_fifo_errors, &tx_collisions, &tx_carrier_errors,
+                            &tx_compressed) == 16)
+        {
+            flag_stat = 1;
+            break;
+        }
+    }
+    if (flag_stat == 0)
+        goto lzExit;
+
+    /* fill returning values */
+    if (p_rx_bytes != NULL)
+        *p_rx_bytes = rx_bytes;
+    if (p_rx_packets != NULL)
+        *p_rx_packets = rx_packets;
+    if (p_tx_bytes != NULL)
+        *p_tx_bytes = tx_bytes;
+    if (p_tx_packets != NULL)
+        *p_tx_packets = tx_packets;
+    if (p_rx_errors != NULL)
+        *p_rx_errors = rx_errors;
+    if (p_rx_dropped != NULL)
+        *p_rx_dropped = rx_dropped;
+    if (p_tx_errors != NULL)
+        *p_tx_errors = tx_errors;
+    if (p_tx_dropped != NULL)
+        *p_tx_dropped = tx_dropped;
+
+lzExit:
+    if (pfDevStat != NULL)
+        fclose(pfDevStat);
+    return (ret_val == 0) ? 0 : -1;
+}
 
 ssize_t safe_write(int fd, const void *buf, size_t count)
 {   
@@ -578,7 +691,7 @@ void display_nodes(machineNode *root)
 	while (curr && !IS_END_NODE(curr)) {
 		memcpy(ip, curr->ip, 4);
 		memcpy(targetmac, curr->mac, 6);
-		retweet("stat> No=%d, IP=%u.%u.%u.%u, MAC=%02X:%02X:%02X:%02X:%02X:%02X, Ping=%d, MachineName=%s, WorkgroupName=%s, Attribute=%s, Devices=%u, Networks=%u, TxFrames=%lu, RxFrames=%lu, RxErrors=%lu",
+		retweet("stat> No=%d, IP=%u.%u.%u.%u, MAC=%02X:%02X:%02X:%02X:%02X:%02X, Ping=%d, MachineName=%s, WorkgroupName=%s, Attribute=%s, Devices=%u, Networks=%u, TxFrames=%llu, RxFrames=%llu, RxErrors=%lu",
 			 count,
 		     ip[0], ip[1], ip[2], ip[3], targetmac[0],
 		     targetmac[1], targetmac[2], targetmac[3],
@@ -591,6 +704,9 @@ void display_nodes(machineNode *root)
 
 		count++;
 		curr = curr->next;
+
+        if ((count % 20) == 0)
+            usleep(500000);
 	}
 }
 
@@ -989,182 +1105,6 @@ int ping(const char *targetip)
 	close(sockfd);
 
 	return SUCCESS;
-}
-
-#define NETWIZ_PIPE_MSGBUFSIZE     512
-#define NETWIZ_LINE_MAXBUFSIZE     32
-
-static int msg_len = 0;
-static int msg_off = 0;
-
-int ifconfig_proc(const char *msg, int len)
-{
-	char buf[NETWIZ_LINE_MAXBUFSIZE] = "";
-	int nLen = 0;
-	char *tmp1 = NULL;
-	char *tmp2 = NULL;
-
-/*
-    pNetWiz->m_pSummaryRet->uDevicesFound  = pNetWiz->m_nDevicesFound;
-    pNetWiz->m_pSummaryRet->uNetworksFound = pNetWiz->m_nNetworksFound;
-*/
-
-	if (NULL != (tmp1 = strstr(msg, "TX packets:"))) {
-		if (NULL != (tmp2 = strstr(tmp1, "errors:"))) {
-			nLen = tmp2 - (tmp1 + strlen("TX packets:"));
-			if (nLen > NETWIZ_LINE_MAXBUFSIZE - 1)
-				nLen = NETWIZ_LINE_MAXBUFSIZE - 1;
-
-			memcpy(buf, tmp1 + strlen("TX packets:"), nLen);
-			buf[nLen] = 0;
-
-			//pNetWiz->m_pSummaryRet->ulTxFrames = Str2Long( buf );
-#ifdef DEBUG
-			retweet("ulTxFrames=%s", buf);
-#endif
-			m_ulTxFrames = Str2Long(buf);
-
-			if (NULL != (tmp1 = strstr(tmp2, "dropped:"))) {
-				nLen = tmp1 - (tmp2 + strlen("errors:"));
-				if (nLen > NETWIZ_LINE_MAXBUFSIZE - 1)
-					nLen = NETWIZ_LINE_MAXBUFSIZE - 1;
-
-				memcpy(buf, tmp2 + strlen("errors:"),
-				       nLen);
-				buf[nLen] = 0;
-
-				//pNetWiz->m_pSummaryRet->ulTxFrames += Str2Long( buf );
-#ifdef DEBUG
-				retweet("ulTxFrames=%s", buf);
-#endif
-				m_ulTxFrames += Str2Long(buf);
-			}
-		}
-	} else if (NULL != (tmp1 = strstr(msg, "RX packets:"))) {
-		if (NULL != (tmp2 = strstr(tmp1, "errors:"))) {
-			nLen = tmp2 - (tmp1 + strlen("RX packets:"));
-			if (nLen > NETWIZ_LINE_MAXBUFSIZE - 1)
-				nLen = NETWIZ_LINE_MAXBUFSIZE - 1;
-
-			memcpy(buf, tmp1 + strlen("RX packets:"), nLen);
-			buf[nLen] = 0;
-
-			//pNetWiz->m_pSummaryRet->ulRxFrames = Str2Long( buf );
-#ifdef DEBUG
-			retweet("ulRxFrames=%s", buf);
-#endif
-			m_ulRxFrames = Str2Long(buf);
-
-			if (NULL != (tmp1 = strstr(tmp2, "dropped:"))) {
-				nLen = tmp1 - (tmp2 + strlen("errors:"));
-				if (nLen > NETWIZ_LINE_MAXBUFSIZE - 1)
-					nLen = NETWIZ_LINE_MAXBUFSIZE - 1;
-
-				memcpy(buf, tmp2 + strlen("errors:"),
-				       nLen);
-				buf[nLen] = 0;
-
-				//pNetWiz->m_pSummaryRet->ulRxErrors = Str2Long( buf );
-#ifdef DEBUG
-				retweet("ulRxErrors=%s", buf);
-#endif
-				m_ulRxErrors = Str2Long(buf);
-			}
-		}
-	}
-
-	return 0;
-}
-
-int ProcPipe_ifconfig(FILE * pPipeHandle, unsigned char *msg_buf)
-{
-	int ret = 0, out_len = 0;
-
-	if (pPipeHandle == NULL)
-		return -1;
-
-	/* Read iptools output to buffer */
-	do {
-		int nLen = 0;
-		unsigned char *pBuf = NULL;
-
-	      read_from_file:
-		/* Move valid data in message buffer from tail to start if necessary */
-		if (msg_len == NETWIZ_PIPE_MSGBUFSIZE) {
-			/* Move valid data from tail to start */
-			unsigned char *src = &msg_buf[msg_off],
-			    *dst = &msg_buf[0],
-			    *end = &msg_buf[NETWIZ_PIPE_MSGBUFSIZE];
-			for (; src < end; src++, dst++)
-				*dst = *src;
-			/* Reposition valid data offset and length */
-			msg_off = 0;
-			msg_len = dst - msg_buf;
-		}
-
-		/* Read new data from file to buffer */
-		if (msg_len < NETWIZ_PIPE_MSGBUFSIZE) {
-			int new_len =
-			    read(fileno(pPipeHandle), &msg_buf[msg_len],
-				 NETWIZ_PIPE_MSGBUFSIZE - msg_len);
-#ifdef DEBUG
-			retweet("Read %d bytes from pipe", new_len);
-#endif
-			new_len = (new_len < 0 ? 0 : new_len);
-			out_len += new_len;
-			msg_len += new_len;
-#ifdef DEBUG
-			retweet
-			    ("msg_off = %d, msg_len = %d, out_len = %d",
-			     msg_off, msg_len, out_len);
-#endif
-		}
-
-		/* Quit if no data available */
-		if (msg_off == msg_len)
-			break;
-
-	      proc_next_line:
-		/* Check wether there are a line of buffer, if available process it */
-		nLen = 0;
-		pBuf = &msg_buf[msg_off];
-		for (; msg_off < msg_len; msg_off++) {
-#ifdef DEBUG
-			retweet("%c", msg_buf[msg_off]);
-#endif
-			if ((msg_buf[msg_off] != '\n')
-			    && (msg_buf[msg_off] != '\r')) {
-				nLen++;
-			} else {
-				/* Skip '\n' */
-				msg_buf[msg_off] = 0;
-				msg_off++;
-
-				ret +=
-				    ifconfig_proc((const char *) pBuf,
-						  nLen) == 0 ? 1 : 0;
-				goto proc_next_line;
-			}
-		}
-
-		/* No further complete line available, reverse ses->msg_off to valid buffer start */
-		msg_off = pBuf - msg_buf;
-
-		if (msg_len < NETWIZ_PIPE_MSGBUFSIZE)
-			break;
-
-		/* Skip the whole buffer if there are no '\n' in the whole buffer */
-		if (msg_off == 0)
-			msg_len = 0;
-
-		goto read_from_file;
-
-	} while (0);
-
-	if (0 == out_len)
-		ret = -1;
-
-	return ret;
 }
 
 /*------------------------------------------------------------------------
@@ -2103,7 +2043,6 @@ int netbios(u_long ip, char *machine, char *workgroup)
 		return -1;
 	}
 
-
 	/* query names */
 	int have_next_addr = FALSE;
 	int npending = 0;
@@ -2247,66 +2186,6 @@ int netbios(u_long ip, char *machine, char *workgroup)
 
     close(sockfd);
 	return 0;
-}
-
-int ScanSummary()
-{
-	int nErr = 0;
-	char command[64];
-	FILE *pPipeHandle = NULL;
-	unsigned char msg_buf[NETWIZ_PIPE_MSGBUFSIZE];
-	int timeout = 50000;
-	char tmp[10] = "";
-
-	strcpy(tmp, m_localDEV);
-	bzero(&command, sizeof(command));
-	sprintf(command, "/sbin/ifconfig %s", strtok(tmp, ":"));
-#ifdef DEBUG
-	retweet("Pipe ifconfig command: %s", command);
-#endif
-
-	if ((pPipeHandle = popen(command, "r")) != NULL) {
-		bzero(&msg_buf, sizeof(msg_buf));
-		msg_len = 0;
-		msg_off = 0;
-
-		int select_max;
-		fd_set select_set;
-		struct timeval select_to;
-
-		select_max = 0;
-		FD_ZERO(&select_set);
-
-		int fd = (pPipeHandle == NULL ? -1 : fileno(pPipeHandle));
-		select_max = (fd > select_max ? fd : select_max);
-		if (0 == select_max)
-			return -1;
-
-		FD_SET(fd, &select_set);
-		select_to.tv_sec = timeout / 1000000;
-		select_to.tv_usec = timeout % 1000000;
-
-		/* Process output which have output by select */
-		if (select(select_max + 1, &select_set, NULL, NULL,
-		     &select_to) > 0) {
-			if (FD_ISSET(fd, &select_set)) {
-				nErr = ProcPipe_ifconfig(pPipeHandle, msg_buf);
-			}
-		}
-
-		pclose(pPipeHandle);
-		pPipeHandle = NULL;
-
-		m_ulTxFrames -= m_ulTxFrames_prev;
-		m_ulRxFrames -= m_ulRxFrames_prev;
-		m_ulRxErrors -= m_ulRxErrors_prev;
-	} else {
-#ifdef DEBUG
-		retweet("NetWizard ifconfig pipe created failed!");
-#endif
-	}
-
-	return nErr;
 }
 
 int TestPing(machineNode * root)
@@ -2597,6 +2476,9 @@ typedef enum {
 machineNode *discovery(unsigned int ipstart, unsigned int ipstop,
 		       unsigned short wOption, machineNode * root)
 {
+    unsigned long long ulTxFrames_prev = 0;
+    unsigned long long ulRxFrames_prev = 0;
+    unsigned long ulRxErrors_prev = 0;
 	machineNode *curr = NULL;
 
 #ifdef DEBUG
@@ -2612,22 +2494,12 @@ machineNode *discovery(unsigned int ipstart, unsigned int ipstop,
 	curr = root;
 
 	m_ulTxFrames = m_ulRxFrames = m_ulRxErrors = 0;
-	m_ulTxFrames_prev = m_ulRxFrames_prev = m_ulRxErrors_prev = 0;
+	ulTxFrames_prev = ulRxFrames_prev = ulRxErrors_prev = 0;
 
-	ScanSummary();
-
-	m_ulTxFrames_prev = m_ulTxFrames;
-	m_ulRxFrames_prev = m_ulRxFrames;
-	m_ulRxErrors_prev = m_ulRxErrors;
-
-	if (m_ulTxFrames_prev == 0)
-	{
-		ScanSummary();
-
-		m_ulTxFrames_prev = m_ulTxFrames;
-		m_ulRxFrames_prev = m_ulRxFrames;
-		m_ulRxErrors_prev = m_ulRxErrors;
-	}
+    /* get summary info: rx packets, tx packets, rx errors */
+    statV300PortIface(m_localDEV,
+                NULL, &ulRxFrames_prev, NULL, &ulTxFrames_prev,
+                &ulRxErrors_prev, NULL, NULL, NULL);
 
 	if ((wOption & eARP) != 0)
 		TestArp(ipstart, ipstop, root);
@@ -2643,7 +2515,13 @@ machineNode *discovery(unsigned int ipstart, unsigned int ipstop,
 	if ((wOption & eNETBOIS) != 0)
 		TestNetBios(root);
 
-	ScanSummary();
+    statV300PortIface(m_localDEV,
+                NULL, &m_ulRxFrames, NULL, &m_ulTxFrames,
+                &m_ulRxErrors, NULL, NULL, NULL);
+
+    m_ulRxFrames = m_ulRxFrames - ulRxFrames_prev;
+    m_ulTxFrames = m_ulTxFrames - ulTxFrames_prev;
+    m_ulRxErrors = m_ulRxErrors - ulRxErrors_prev;
 
 #ifdef DEBUG
 	gettimeofday(&slmtv, &slmtz);
