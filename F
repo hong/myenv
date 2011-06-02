@@ -1,0 +1,5 @@
+#!/bin/bash
+
+if [ "$1" != "" ]; then
+	find . -name "*.c" -name "*.cpp" -o -name "*.h" | xargs grep "$1"
+fi
