@@ -1,0 +1,5 @@
+#!/bin/bash
+
+if [ "$1" != "" ] && [ "$2" != "" ] ; then
+	find . -name "*.cpp" | xargs perl -pi -e "s|$1|$2|g"
+fi
